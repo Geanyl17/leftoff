@@ -1,0 +1,9 @@
+#!/bin/sh
+# Runs the built CLI (out/main/cli.js). Symlink this into ~/.local/bin.
+here="$(dirname "$(readlink -f "$0")")"
+cli="$here/../out/main/cli.js"
+if command -v node >/dev/null 2>&1; then
+  exec node "$cli" "$@"
+fi
+# No system node: Electron's bundled one works the same.
+ELECTRON_RUN_AS_NODE=1 exec "$here/../node_modules/electron/dist/electron" "$cli" "$@"

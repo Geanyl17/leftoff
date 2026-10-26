@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
+  <!-- A progress ring stopped three-quarters of the way round: work paused where you left it. -->
+  <rect x="4" y="4" width="92" height="92" rx="24" fill="#18181b"/>
+  <circle cx="50" cy="50" r="23" fill="none" stroke="#3f3f46" stroke-width="10"/>
+  <path d="M50 27a23 23 0 1 1-23 23" fill="none" stroke="#f59e0b" stroke-width="10" stroke-linecap="round"/>
+</svg>
