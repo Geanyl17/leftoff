@@ -9,7 +9,11 @@ import { mapLimit } from './util'
 // They add up to gigabytes, so each file is parsed once and then only from where we stopped,
 // with the parsed state cached on disk between launches.
 
-const CLAUDE_DIR = join(homedir(), '.claude', 'projects')
+// Claude Code's own transcripts, plus those of `kimi` (Claude Code run on the Kimi API
+// with CLAUDE_CONFIG_DIR=~/.claude-kimi): same format, a separate folder.
+const CLAUDE_DIRS = [join(homedir(), '.claude', 'projects'), join(homedir(), '.claude-kimi', 'projects')]
+/** True for a session `kimi` ran, which resumes with `kimi`, not `claude`. */
+export const isKimiSession = (file: string): boolean => file.startsWith(CLAUDE_DIRS[1])
 const RECENT_MS = (ACTIVITY_DAYS + 2) * 86_400_000
 const TAIL_BYTES = 2 * 1024 * 1024
 const CHUNK = 1 << 20
@@ -196,16 +200,16 @@ export async function scanClaudeSessions(projects: { id: string; paths: string[]
   const result = new Map<string, ProjectSessions>()
   const byId = new Map<string, ClaudeSession>()
   const unassigned: ClaudeSession[] = []
-  const dirs = await readdir(CLAUDE_DIR).catch(() => null)
-  if (!dirs) return { byProject: result, byId, unassigned }
-
   const seen = new Set<string>()
-  for (const d of dirs) {
+  const roots = (
+    await Promise.all(CLAUDE_DIRS.map(async (root) => ((await readdir(root).catch(() => [])) as string[]).map((d) => ({ root, d }))))
+  ).flat()
+  for (const { root, d } of roots) {
     if (d.startsWith('-tmp-')) continue // scratch sessions of tools and agents
     const match = keys.find((k) => d === k.key || d.startsWith(k.key + '-'))
-    const files = (await readdir(join(CLAUDE_DIR, d)).catch(() => [] as string[])).filter((f) => f.endsWith('.jsonl'))
+    const files = (await readdir(join(root, d)).catch(() => [] as string[])).filter((f) => f.endsWith('.jsonl'))
     const sessions = await mapLimit(files, 4, async (f) => {
-      const path = join(CLAUDE_DIR, d, f)
+      const path = join(root, d, f)
       seen.add(path)
       return readSession(path, d).catch(() => null)
     })
@@ -233,7 +237,7 @@ export async function scanClaudeSessions(projects: { id: string; paths: string[]
   unassigned.sort((a, b) => b.updated - a.updated)
 
   for (const file of Object.keys(cache)) {
-    if (!seen.has(file) && file.startsWith(CLAUDE_DIR)) {
+    if (!seen.has(file) && CLAUDE_DIRS.some((r) => file.startsWith(r))) {
       delete cache[file]
       cacheDirty = true
     }

@@ -2,7 +2,7 @@ import { contextBridge, ipcRenderer } from 'electron'
 import type { ChatState, Connection, OpenTarget, ProjectMeta, Settings, Snapshot } from '@shared/types'
 import type { ThreadAction } from '@shared/threads'
 
-type Result = Promise<{ ok: boolean; error?: string }>
+type Result = Promise<{ ok: boolean; error?: string; thread?: { id: string } }>
 
 const api = {
   snapshot: (): Promise<Snapshot> => ipcRenderer.invoke('snapshot'),

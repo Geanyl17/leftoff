@@ -24,7 +24,7 @@ To-do apps never stuck, because they only work if you remember to update them, a
 
 For each project, two things:
 
-- **Last session:** one to three sentences on what got done.
+- **Last session:** one to three sentences on what got done. If you run several Claude chats on one project at once, each gets its own line and its own Resume link.
 - **Ongoing:** the tasks still open, including the ones you got sidetracked away from.
 
 That's deliberately all. There are no streaks, charts or notifications. Projects with nothing open that you haven't touched for two weeks fold away under **Quiet**, so the list stays short.
@@ -33,9 +33,9 @@ You can switch between three views:
 
 - **List:** one readable column.
 - **Grid:** cards across the whole window, good for full screen (F11).
-- **Board:** every task as a ticket in High priority, Low priority, Ongoing and Done, grouped by project. You can drag tickets between columns, or right-click one to move it.
+- **Board:** every task as a card in To do, Doing, Waiting and Done, grouped by project. Priority is a flag on the card, and cards can carry a due date. You can drag cards between columns, or right-click one to move it.
 
-![The board view: tasks grouped by project in High priority, Low priority, Ongoing and Done columns](docs/board.png)
+![The board view, from an earlier version with different columns](docs/board.png)
 
 ## How it stays up to date
 
@@ -46,7 +46,19 @@ Claude Code does the writing, through four pieces that `npm run setup` installs:
 3. **A session-start hook.** Every new Claude session in a project starts out knowing where you left off there.
 4. **A safety net.** Every 8 hours, the app finds Claude sessions that ended without being recorded. It has Claude Haiku summarize each one through your `claude` CLI, at roughly 6k tokens per session. You can turn this off in Settings.
 
-You can also add, edit, drag and tick off tasks yourself, or write a session note by hand. Without Claude Code, Left Off still works as a plain task list next to each project's git status. It just won't fill itself in.
+You can also add, edit, drag and tick off tasks yourself, or write a session note by hand.
+
+## Switching between agents
+
+If you use more than one coding agent, Left Off is the handoff between them. It knows Claude Code, Codex, and Kimi (Claude Code pointed at the Kimi API with its own config folder, `~/.claude-kimi`). Whichever one you open in a project gets the same brief, so when one runs out of usage you carry on in another without explaining anything again.
+
+- **Every entry says which agent wrote it, and where the work is:** the branch, and the worktree folder if there is one. Git worktrees kept beside a repo record into that repo's project.
+- **`leftoff show <task>`** prints one task in full: the whole note, the next step, where the work is, its history, and the command that reopens the session that last touched it.
+- **`leftoff tail`** shows how another agent's last session ended, read from its own transcript. The brief points to it when a session stopped without recording anything. It reads local files only; no model is called.
+
+`npm run setup` connects Claude Code. For Codex, link `claude-skill/` to `~/.codex/skills/leftoff` and add a `SessionStart` hook that runs `leftoff hook session-start` to `~/.codex/hooks.json`. For a second Claude Code config folder, do the same in that folder's `skills/` and `settings.json`.
+
+**Your own rules.** The skill is general. Anything specific to you (which projects other people can see, where requests get filed, naming rules) goes in `~/.config/leftoff/local.md`. Agents are told to read it after the skill, and it wins where the two disagree. Without Claude Code, Left Off still works as a plain task list next to each project's git status. It just won't fill itself in.
 
 ## Light on time and tokens
 
@@ -111,7 +123,7 @@ Everything stays on your machine, in `~/.config/leftoff`. Left Off makes no netw
 - **The 8-hour safety net.** It sends a condensed transcript of each unrecorded session to Claude Haiku.
 - **The assistant chat**, when you use it.
 
-Left Off reads your Claude Code transcripts from `~/.claude/projects`. These are local files, so switching Claude accounts doesn't lose any history.
+Left Off reads your Claude Code transcripts from `~/.claude/projects` (and `~/.claude-kimi/projects` and `~/.codex/sessions` if you have them). These are local files, so switching Claude accounts doesn't lose any history.
 
 ## Status
 
@@ -135,10 +147,11 @@ npm run build       # then quit Left Off from the tray icon and reopen it
 ```
 src/main/       the app: scanner.ts (git), claude.ts (session transcripts), threadStore.ts (data file),
                 vault.ts (keyring + ssh), assistant.ts, index.ts
-src/cli/        the `leftoff` command, the session-start hook, autolog.ts (the 8-hour safety net)
+src/cli/        the `leftoff` command, the session-start hook, autolog.ts (the 8-hour safety net),
+                sessions.ts (reading other agents' transcripts for the brief and `leftoff tail`)
 src/shared/     types and the task/session rules shared by the app and the CLI
 src/renderer/   the window (React)
-claude-skill/   the Claude Code skill
+claude-skill/   the skill, shared by every agent
 ```
 
 ## License

@@ -8,7 +8,7 @@ import { applyThreadAction, recordSession, type Actor, type ThreadAction } from 
 import { defaultMeta, type ClaudeSession, type Connection, type OpenTarget, type ProjectMeta, type ProjectScan, type Settings, type Snapshot } from '@shared/types'
 import { timeAgo } from '@shared/time'
 import { scanProjects } from './scanner'
-import { initClaudeCache } from './claude'
+import { initClaudeCache, isKimiSession } from './claude'
 import { DEFAULT_SETTINGS } from './seed'
 import { detectRoots, projectFor } from './roots'
 import { claudeSetupStatus, setupClaude } from './claudeSetup'
@@ -81,14 +81,16 @@ function watchData(): void {
   })
 }
 
-function threadAction(id: string, action: ThreadAction, by: Actor = 'you'): { ok: boolean; error?: string } {
+function threadAction(id: string, action: ThreadAction, by: Actor = 'you'): { ok: boolean; error?: string; thread?: { id: string } } {
   const project = projects.find((p) => p.id === id)
   try {
-    updateThreads((db) => {
-      db[id] = applyThreadAction(db[id] ?? [], action, { by, now: Date.now(), branch: project?.repos[0]?.branch }).list
+    const thread = updateThreads((db) => {
+      const r = applyThreadAction(db[id] ?? [], action, { by, now: Date.now(), branch: project?.repos[0]?.branch })
+      db[id] = r.list
+      return r.thread
     })
     push()
-    return { ok: true }
+    return { ok: true, thread: { id: thread.id } }
   } catch (err) {
     return { ok: false, error: message(err) }
   }
@@ -229,6 +231,8 @@ async function openTarget(id: string, target: OpenTarget, arg?: string): Promise
       // `claude --resume` looks the session up by the directory it ran in.
       const s = p.sessions.find((x) => x.id === arg)
       const cwd = s?.dir.startsWith('/') ? s.dir : p.path || app.getPath('home')
+      // A Kimi session resumes through the `kimi` shell function (its own config dir and key).
+      if (s && isKimiSession(s.file)) return openTerminal(cwd, ['bash', '-ic', `kimi --resume ${s.id}`])
       return openTerminal(cwd, s ? ['claude', '--resume', s.id] : ['claude', '--continue'])
     }
   }
@@ -579,6 +583,12 @@ async function dump(): Promise<void> {
 // for the reply.
 async function screenshot(path: string): Promise<void> {
   await new Promise((r) => setTimeout(r, 1500))
+  // LEFTOFF_VIEW=board|grid|list picks the view to capture.
+  const view = process.env.LEFTOFF_VIEW
+  if (view) {
+    await mainWindow!.webContents.executeJavaScript(`localStorage.setItem('view', '"${view.replace(/[^a-z]/g, '')}"'); location.reload()`)
+    await new Promise((r) => setTimeout(r, 1800))
+  }
   const ask = process.env.LEFTOFF_ASK
   if (ask) {
     await mainWindow!.webContents.executeJavaScript("localStorage.setItem('chatOpen', 'true'); location.reload()")
