@@ -1,6 +1,6 @@
 import { defaultMeta, type Connection, type ProjectMeta, type ProjectScan, type SecretRef, type Snapshot } from '@shared/types'
 import { daysSince } from '@shared/time'
-import { sortThreads, type LogEntry, type Thread } from '@shared/threads'
+import { latestChats, sortThreads, type LogEntry, type Thread } from '@shared/threads'
 
 export interface ProjectView {
   id: string
@@ -8,6 +8,7 @@ export interface ProjectView {
   m: ProjectMeta
   name: string
   log: LogEntry[]
+  latest: LogEntry[] // the last session, plus other chats recorded around the same time
   tasks: Thread[] // ongoing: the current one first
   done: Thread[]
   // Shown when nothing has been recorded yet.
@@ -47,6 +48,7 @@ export function buildViews(s: Snapshot): ProjectView[] {
       m,
       name: m.alias || p.name,
       log,
+      latest: latestChats(log),
       tasks,
       done,
       fallback,

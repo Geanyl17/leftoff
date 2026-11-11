@@ -58,12 +58,25 @@ async function findRepos(dir: string, depth: number): Promise<string[]> {
   return found
 }
 
+// A git worktree (its .git is a file pointing into another repo's .git/worktrees/) is
+// the same project as that repo checked out a second time, not a project of its own:
+// its Claude sessions already count toward the main folder.
+async function isWorktree(dir: string): Promise<boolean> {
+  const st = await stat(join(dir, '.git')).catch(() => null)
+  if (!st?.isFile()) return false
+  const text = await readFile(join(dir, '.git'), 'utf8').catch(() => '')
+  return /gitdir:.*\/\.git\/worktrees\//.test(text)
+}
+
 async function listProjectDirs(roots: string[]): Promise<string[]> {
   const dirs: string[] = []
   for (const root of roots) {
     const entries = await readdir(root, { withFileTypes: true }).catch(() => [])
     for (const e of entries) {
-      if (e.isDirectory() && !e.name.startsWith('.')) dirs.push(join(root, e.name))
+      if (!e.isDirectory() || e.name.startsWith('.')) continue
+      const dir = join(root, e.name)
+      if (await isWorktree(dir)) continue
+      dirs.push(dir)
     }
   }
   return dirs

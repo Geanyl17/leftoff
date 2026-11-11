@@ -7,11 +7,24 @@ import { timeAgo } from './time'
 
 export type ThreadStatus = 'active' | 'paused' | 'done' // active = ongoing
 export type Actor = 'you' | 'claude'
+// Which coding agent wrote something, when one did. `by` stays what it always was (the app
+// and anything syncing the data file read it); this says which of the user's agents it actually was, so a
+// session started in one can tell what another left behind.
+export type Agent = 'claude' | 'codex' | 'kimi'
+export const AGENT_NAME: Record<Agent, string> = { claude: 'Claude', codex: 'Codex', kimi: 'Kimi' }
+/** Who to name for an entry: the agent if one wrote it, else Claude or you. */
+export const whoLabel = (e: { by: Actor; agent?: Agent }): string => (e.agent ? AGENT_NAME[e.agent] : e.by === 'claude' ? 'Claude' : 'you')
 export type Priority = 'high' | 'low'
+// What sort of task it is. Work is committed; waiting is blocked on someone else; check
+// is done but needs a look; idea is a suggestion nobody committed to. Unset counts as work.
+// A tool that syncs the data file elsewhere (a team board, say) can set it too.
+export type Kind = 'work' | 'waiting' | 'check' | 'idea'
+export const KINDS: Kind[] = ['work', 'waiting', 'check', 'idea']
 
 export interface ThreadEvent {
   at: number
   by: Actor
+  agent?: Agent
   text: string
 }
 
@@ -24,11 +37,18 @@ export interface Thread {
   next: string
   reason: string // why it was paused
   branch: string
-  sessionId: string // Claude session that last worked on it
+  sessionId: string // the agent session that last worked on it
   by: Actor
+  agent?: Agent // the agent that last touched it; unset when you did
+  dir?: string // the folder the work is in when that isn't the project's own (a worktree)
   createdAt: number
   updatedAt: number
   history: ThreadEvent[]
+  // Planning. planAt is when it last changed, so a tool syncing it elsewhere can let the newer side win.
+  due?: string // YYYY-MM-DD
+  kind?: Kind
+  goal?: string // the goal's title
+  planAt?: number
 }
 
 export interface ThreadCtx {
@@ -36,6 +56,8 @@ export interface ThreadCtx {
   now: number
   branch?: string
   sessionId?: string
+  agent?: Agent
+  dir?: string // '' = the project's own folder; unset = not known, leave what's recorded
 }
 
 export type ThreadAction =
@@ -48,6 +70,8 @@ export type ThreadAction =
   | { type: 'resume'; id: string; reason?: string }
   | { type: 'done'; id?: string; note?: string }
   | { type: 'delete'; id: string }
+  // Due date, label and goal. null clears a field; absent leaves it.
+  | { type: 'plan'; id: string; due?: string | null; kind?: Kind; goal?: string | null }
 
 const HISTORY_CAP = 30
 const DONE_CAP = 20
@@ -60,14 +84,18 @@ function newId(list: Thread[]): string {
 }
 
 function log(t: Thread, ctx: ThreadCtx, text: string): void {
-  t.history = [{ at: ctx.now, by: ctx.by, text }, ...t.history].slice(0, HISTORY_CAP)
+  t.history = [{ at: ctx.now, by: ctx.by, ...(ctx.agent ? { agent: ctx.agent } : {}), text }, ...t.history].slice(0, HISTORY_CAP)
 }
 
 function touch(t: Thread, ctx: ThreadCtx): void {
   t.updatedAt = ctx.now
   t.by = ctx.by
+  if (ctx.agent) t.agent = ctx.agent
+  else delete t.agent
   if (ctx.branch) t.branch = ctx.branch
   if (ctx.sessionId) t.sessionId = ctx.sessionId
+  if (ctx.dir) t.dir = ctx.dir
+  else if (ctx.dir === '') delete t.dir
 }
 
 function parkActive(list: Thread[], ctx: ThreadCtx, reason: string): void {
@@ -83,6 +111,8 @@ function create(list: Thread[], ctx: ThreadCtx, title: string, status: ThreadSta
   return {
     id: newId(list), title, status, note, next, reason: '',
     branch: ctx.branch ?? '', sessionId: ctx.sessionId ?? '', by: ctx.by,
+    ...(ctx.agent ? { agent: ctx.agent } : {}),
+    ...(ctx.dir ? { dir: ctx.dir } : {}),
     createdAt: ctx.now, updatedAt: ctx.now, history: []
   }
 }
@@ -173,6 +203,30 @@ export function applyThreadAction(input: Thread[], action: ThreadAction, ctx: Th
       thread = t
       break
     }
+    case 'plan': {
+      const t = byId(action.id)!
+      const said: string[] = []
+      if (action.due !== undefined && (action.due || undefined) !== t.due) {
+        if (action.due && !/^\d{4}-\d{2}-\d{2}$/.test(action.due)) throw new Error('A due date looks like 2026-11-20')
+        said.push(action.due ? (t.due ? `Due date moved ${t.due} → ${action.due}` : `Due ${action.due}`) : 'Due date cleared')
+        t.due = action.due || undefined
+      }
+      if (action.kind !== undefined && action.kind !== (t.kind ?? 'work')) {
+        t.kind = action.kind
+        said.push(`Marked ${action.kind === 'check' ? 'to check' : action.kind}`)
+      }
+      if (action.goal !== undefined && (action.goal || undefined) !== t.goal) {
+        t.goal = action.goal?.trim() || undefined
+        said.push(t.goal ? `Goal: ${t.goal}` : 'Goal cleared')
+      }
+      t.planAt = ctx.now
+      if (said.length) {
+        t.updatedAt = ctx.now
+        log(t, ctx, said.join('; '))
+      }
+      thread = t
+      break
+    }
     case 'delete': {
       const i = list.findIndex((t) => t.id === action.id)
       if (i < 0) throw new Error(`No thread with id ${action.id}`)
@@ -184,6 +238,65 @@ export function applyThreadAction(input: Thread[], action: ThreadAction, ctx: Th
   const done = list.filter((t) => t.status === 'done').sort((a, b) => b.updatedAt - a.updatedAt)
   const dropped = new Set(done.slice(DONE_CAP).map((t) => t.id))
   return { list: list.filter((t) => !dropped.has(t.id)), thread }
+}
+
+// ─── The board ──────────────────────────────────────────────────────────────
+
+// Where a task is: four columns. Priority is a flag
+// (priority === 'high'), not a column.
+export type Column = 'todo' | 'doing' | 'waiting' | 'done'
+export const COLUMNS: { id: Column; title: string }[] = [
+  { id: 'todo', title: 'To do' },
+  { id: 'doing', title: 'Doing' },
+  { id: 'waiting', title: 'Waiting' },
+  { id: 'done', title: 'Done' }
+]
+
+export function columnOf(t: Thread): Column {
+  if (t.status === 'done') return 'done'
+  if (t.kind === 'waiting') return 'waiting'
+  return t.status === 'active' ? 'doing' : 'todo'
+}
+
+/** The actions that put a task in a column (a status move, and the label for Waiting). */
+export function actionsToColumn(t: Thread, to: Column): ThreadAction[] {
+  const out: ThreadAction[] = []
+  if (to === 'waiting') {
+    if (t.status !== 'paused') out.push({ type: 'move', id: t.id, status: 'paused' })
+    out.push({ type: 'plan', id: t.id, kind: 'waiting' })
+    return out
+  }
+  if (t.kind === 'waiting') out.push({ type: 'plan', id: t.id, kind: 'work' })
+  const status: ThreadStatus = to === 'doing' ? 'active' : to === 'done' ? 'done' : 'paused'
+  if (status !== t.status) out.push({ type: 'move', id: t.id, status })
+  return out
+}
+
+/** Open and committed: not done, not an idea. */
+export const isOpen = (t: Thread): boolean => t.status !== 'done' && t.kind !== 'idea'
+
+/** Overdue first, then soonest due, then flagged, then most recently touched. */
+export function byUrgency(a: Thread, b: Thread): number {
+  return (
+    (a.due ?? '9999').localeCompare(b.due ?? '9999') ||
+    Number(b.priority === 'high') - Number(a.priority === 'high') ||
+    b.updatedAt - a.updatedAt
+  )
+}
+
+/** Today in the user's time zone, as YYYY-MM-DD. */
+export function todayYmd(now = Date.now()): string {
+  const d = new Date(now)
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+
+export function dueLabel(due: string, today = todayYmd()): string {
+  const n = Math.round((Date.parse(`${due}T00:00:00Z`) - Date.parse(`${today}T00:00:00Z`)) / 86_400_000)
+  if (n === 0) return 'due today'
+  if (n === 1) return 'due tomorrow'
+  if (n < 0) return `${-n} day${n === -1 ? '' : 's'} late`
+  if (n < 7) return `due in ${n} days`
+  return `due ${new Date(`${due}T00:00:00Z`).toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' })}`
 }
 
 const RANK: Record<ThreadStatus, number> = { active: 0, paused: 1, done: 2 }
@@ -218,6 +331,8 @@ export interface LogEntry {
   text: string
   sessionId: string
   branch: string
+  agent?: Agent // the agent whose session this was
+  dir?: string // the folder it worked in when that isn't the project's own (a worktree)
   auto?: boolean // written by the automatic recorder after the session, not by Claude in it
 }
 
@@ -235,6 +350,8 @@ export function recordSession(input: LogEntry[], text: string, ctx: ThreadCtx & 
     text: t,
     sessionId: ctx.sessionId ?? '',
     branch: ctx.branch ?? '',
+    ...(ctx.agent ? { agent: ctx.agent } : {}),
+    ...(ctx.dir ? { dir: ctx.dir } : {}),
     ...(ctx.auto ? { auto: true } : {})
   }
   if (i >= 0) list.splice(i, 1)
@@ -244,23 +361,80 @@ export function recordSession(input: LogEntry[], text: string, ctx: ThreadCtx & 
   return { list: list.slice(0, LOG_CAP), entry }
 }
 
+// Chats recorded within a few hours of the latest one were likely running side by side, so
+// they all count as the last session (up to three).
+const SIDE_BY_SIDE = 6 * 3600_000
+export function latestChats(log: LogEntry[]): LogEntry[] {
+  return log.filter((e) => log[0].at - e.at < SIDE_BY_SIDE).slice(0, 3)
+}
+
+const HOME_RE = /^(\/var)?\/home\/[^/]+/
+/** A path the way people write it: ~/code/app. */
+export const tidyPath = (p: string): string => p.replace(HOME_RE, '~')
+
+/** Where a piece of work is: its branch and, when it isn't the project's own folder, the folder. */
+export function whereLabel(e: { branch?: string; dir?: string }): string {
+  return [e.branch && `branch ${e.branch}`, e.dir && `in ${tidyPath(e.dir)}`].filter(Boolean).join(' ')
+}
+
 export function describeProject(project: string, threads: Thread[], log: LogEntry[], now = Date.now()): string {
   const sorted = sortThreads(threads)
   const open = sorted.filter((t) => t.status !== 'done')
   const done = sorted.filter((t) => t.status === 'done').slice(0, 3)
   const lines = [`Left Off · ${project}`]
   const last = log[0]
-  lines.push(last ? `Last session (${timeAgo(last.at, now)}, ${last.by === 'claude' ? 'Claude' : 'you'}): ${last.text}` : 'Last session: nothing recorded yet')
-  if (log[1]) lines.push(`Session before (${timeAgo(log[1].at, now)}): ${log[1].text}`)
-  if (open.length) {
-    lines.push('Ongoing tasks:')
-    for (const t of open) {
-      const flags = [t.status === 'active' && 'ongoing', t.priority === 'high' && 'high priority', t.reason && `paused: ${t.reason}`].filter(Boolean).join('; ')
-      lines.push(`  [${t.id}] ${t.title}${flags ? `  (${flags})` : ''}`)
-      if (t.note) lines.push(`    ${t.note}`)
-      if (t.next) lines.push(`    Next: ${t.next}`)
+  const from = (e: LogEntry): string => [timeAgo(e.at, now), whoLabel(e), whereLabel(e)].filter(Boolean).join(', ')
+  lines.push(last ? `Last session (${from(last)}): ${last.text}` : 'Last session: nothing recorded yet')
+  const latest = latestChats(log)
+  for (const e of latest.slice(1)) lines.push(`Also recent (${from(e)}, another chat): ${e.text}`)
+  if (latest.length < 2 && log[1]) lines.push(`Session before (${from(log[1])}): ${log[1].text}`)
+  // The brief is read at the start of every session, so it carries what matters now
+  // (doing, waiting, flagged, dated) in full and the rest of the backlog as a count.
+  const today = todayYmd(now)
+  const soon = new Date(Date.parse(`${today}T00:00:00Z`) + 7 * 86_400_000).toISOString().slice(0, 10)
+  const line = (t: Thread, withNote: boolean): void => {
+    const flags = [
+      t.priority === 'high' && 'flagged',
+      t.due && dueLabel(t.due, today),
+      t.goal && `goal: ${t.goal}`,
+      t.kind === 'check' && 'needs a check',
+      t.reason && `paused: ${t.reason}`
+    ].filter(Boolean)
+    lines.push(`  [${t.id}] ${t.title}${flags.length ? `  (${flags.join('; ')})` : ''}`)
+    if (withNote && t.note) lines.push(`    ${t.note.length > 300 ? `${t.note.slice(0, 300)}… (rest: \`leftoff show ${t.id}\`)` : t.note}`)
+    if (withNote && t.next) lines.push(`    Next: ${t.next}`)
+    // For work in progress: who has it and where, so a session started in another agent
+    // (or another chat) knows whether it's theirs to continue and which folder to open.
+    if (withNote && t.status === 'active') {
+      const where = whereLabel(t)
+      lines.push(`    Last touched ${timeAgo(t.updatedAt, now)} by ${whoLabel(t)}${where ? `, ${where}` : ''}`)
     }
-  } else lines.push('Ongoing tasks: none')
+  }
+  const doing = open.filter((t) => t.status === 'active' && t.kind !== 'waiting').sort(byUrgency)
+  const waiting = open.filter((t) => t.kind === 'waiting').sort(byUrgency)
+  const todo = open.filter((t) => t.status !== 'active' && t.kind !== 'waiting' && t.kind !== 'idea').sort(byUrgency)
+  const urgent = todo.filter((t) => t.priority === 'high' || (t.due && t.due <= soon) || t.kind === 'check')
+  const rest = todo.filter((t) => !urgent.includes(t))
+  const ideas = open.filter((t) => t.kind === 'idea')
+  if (!open.length) lines.push('Open tasks: none')
+  if (doing.length) {
+    lines.push('Doing:')
+    doing.forEach((t) => line(t, true))
+  }
+  if (urgent.length) {
+    lines.push('Up next (flagged, due within a week, or needing a check):')
+    urgent.forEach((t) => line(t, true))
+  }
+  if (waiting.length) {
+    lines.push('Waiting on someone else:')
+    waiting.forEach((t) => line(t, false))
+  }
+  if (rest.length) {
+    lines.push('Also to do:')
+    rest.slice(0, 12).forEach((t) => line(t, false))
+    if (rest.length > 12) lines.push(`  …and ${rest.length - 12} more (\`leftoff status --all\` lists everything)`)
+  }
+  if (ideas.length) lines.push(`Ideas nobody committed to: ${ideas.length} (not work; \`leftoff status --all\` lists them)`)
   if (done.length) lines.push(`Recently done: ${done.map((t) => `${t.title} (${timeAgo(t.updatedAt, now)})`).join(', ')}`)
   return lines.join('\n')
 }

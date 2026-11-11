@@ -1,66 +1,116 @@
 ---
 name: leftoff
-description: Records session progress into Left Off (the user's desktop dashboard that shows, for each project, what got done last session and which tasks are still ongoing) and reaches the user's saved servers and passwords through it. Use this whenever the user is wrapping up, stepping away, switching to another project or task, changing direction mid-conversation (dropping one bug to chase another, setting aside a fix you suggested), needs one of their servers or passwords ("ssh into the prod box", "check the logs on staging"), or says things like "log this", "save progress", "note where we are", "update left off", "what was I doing here", or "what's still pending". Also use it before ending any session where real work got done, even if the user didn't ask, so the next session (and the user) can pick up where this one left off.
+description: Records session progress into Left Off (the user's dashboard of every project's last session and open tasks), hands work between the user's coding agents, and reaches the user's saved servers and passwords. Use this whenever a task gets finished, shipped, started, blocked or given a deadline; when picking up work another agent or chat left behind, or handing work to one; when the user is wrapping up, stepping away, switching projects or changing direction mid-conversation; when they need one of their servers or passwords ("ssh into the prod box"); or when they say "log this", "save progress", "update left off", "what was I doing", "what's still pending". Also use it before ending any session where real work got done, even if the user didn't ask.
 ---
 
 # Left Off
 
-Left Off is a desktop app the user keeps open so they don't lose their place across their projects. For each project it shows two things: **what got done last session** and **ongoing tasks**. Both come only from the `leftoff` command. If nothing gets recorded, the user opens the app tomorrow and sees nothing useful, which is the problem the app exists to fix. The commands only write to Left Off's own file (`~/.config/leftoff/threads.json`), so run them without asking.
+Left Off is where the user keeps track of every project: what got done last session, and every open task. It is also how the user's coding agents (Claude Code, Codex, Kimi) hand work to each other: whichever one opens a project gets the same brief and continues from it. The user reads it to find their place, and may show it to other people. Keep it true, current, and plain enough for someone who wasn't in the session.
 
-Run them from inside the project folder (any subfolder works), or add `--project <folder or project name>`.
+Everything goes through the `leftoff` command. It only writes Left Off's own data, so run it without asking.
 
-## When the session isn't in a project folder
+**The user's own rules.** If `~/.config/leftoff/local.md` exists, read it now. It holds what is specific to this user: which projects other people can see, where requests get filed, naming rules. Where it disagrees with this file, it wins.
 
-If `leftoff` says the current folder isn't inside a project, the work still belongs somewhere. Link this session to a named project with `leftoff project "<name>"`. Use an existing project's name if one fits (for example, the user mentions it), otherwise pick a short name for what the session is about, or ask. After that, `leftoff did` and `leftoff task` work as usual for the rest of the session.
+## Which project
 
-## When the project gets a folder
+`leftoff` records into the project whose folder you are in, and a task id belongs to one project. **Record under the project the work was for.**
 
-A project without a folder gets one when its repo is cloned or created. If the user asks you to clone or create the repo for such a project, put it inside their projects folder (`leftoff roots` prints it), then run `leftoff bind <that folder>`. Left Off moves the project's sessions, tasks, servers and passwords onto the new folder, and this session keeps recording into it.
+- **Git worktrees record into their main project on their own.** A plain copy or a separate clone is not a worktree.
+- **Working on one project from another folder** (a notes or ops folder, a sibling repo)? Add `--project <folder name>` to every command, or the work lands under the wrong project.
+- The brief covers only the folder's own project. `leftoff status --project <name>` shows another one.
 
-If two folderless projects turn out to be the same thing (say the user made one in the app and you made another), fold one into the other with `leftoff merge <project> <into>`, keeping the one the user named.
+## The model
+
+Every open task sits in one of four columns:
+
+| Column | Means | Command |
+|---|---|---|
+| To do | committed, and nobody is on it right now | `leftoff move <task> todo` |
+| Doing | someone is working on it now: you, another chat, or a worker you handed it to | `leftoff move <task> doing` (or `leftoff start "<new title>"`) |
+| Waiting | the next step belongs to someone other than the user and their agents: a client, a boss, a coworker, a vendor | `leftoff move <task> waiting` |
+| Done | finished the way the user would say it | `leftoff done <task>` |
+
+On top of that:
+
+- `leftoff flag <task>` / `unflag`: marks it important. Priority is a flag, not a column. Flag what the user or a requester called important or urgent, not your own follow-ups.
+- `leftoff due <task> <YYYY-MM-DD|none>`: a deadline. Only record dates the user or a requester actually gave; never invent one.
+- `leftoff label <task> check|idea|work`: `check` means built but the user needs to look at it or give a go-ahead. `idea` is a suggestion nobody committed to; it stays out of the brief's lists.
+- `leftoff goal <task> "<goal title>"`: files it under a goal (an outcome with a date).
+
+`<task>` is the id in brackets from the brief, like `[q04t]`. **Always give the id.** Without one, `leftoff done` and `leftoff update` act on the task in Doing, which may be another chat's.
+
+**Waiting is never for the user.** When the next step is the user's own (look at it, approve a deploy, hand over a list), tell them in the conversation, label the task `check`, and open the note with what they need to decide.
+
+## What gets a task
+
+- **A task is a deliverable the user would recognise:** a feature, a fix, a report, a setup, a decision.
+- **Steps, checks and chores are not tasks:** "deploy it", "retry the deploy", "merge main first", "confirm the page loads", "fix the failing test". They go in the note of the deliverable they belong to, or in the session summary. One task per deliverable.
+- **Starting a deliverable that has no task yet?** Add it and put it in Doing (`leftoff start "<title>"`), even if you expect to finish this session. If the session is cut off, that task is what the next one picks up. A small fix done in passing needs no task; `leftoff did` covers it.
+- **Look before you add.** `leftoff status --all` lists every open task. If one already covers the work, update it instead of adding a second.
+
+## Writing a task
+
+- **Title: one plain line saying the outcome**, e.g. "Let customers download their invoices", not "PR #8 + INVOICE_WEBHOOK_SECRET". For work nobody outside will notice, say what it protects or speeds up: "Keep the database from filling the server", not "Trim dead rows".
+- **Not in a title:** passwords, hosts or IPs, security holes, PR numbers, commit ids, branch names. Those go in the note.
+- **Note: open with one plain sentence on where it stands**, because the brief shows only the first 300 characters. Then who asked and who it waits on, then the technical detail (PRs, commits, files).
+- **`--note` replaces the whole note.** To keep what is there, read it first with `leftoff show <id>`, then write back the full current note with the newest state on top, not a dated line appended at the bottom.
+- **`--next "<the single next step>"`** (on `leftoff update`) shows under the note in the brief. Change it when the next step changes.
+- **Done means done the way the user would say it.** If it has to ship, it's done when it's deployed and checked, not when the code is written, the PR is merged or a worker reports back. Until then it's Doing, or To do labelled `check` while it waits for the user's review or go-ahead.
+- **Done or drop?** `leftoff done` says something was delivered. A task that turned out moot, or duplicates another, gets `leftoff drop <id>` after anything worth keeping is moved into the surviving task's note. If you can't tell whether the user still wants it, ask.
+
+## At the start
+
+A hook puts a brief in context: the last session, then **Doing**, **Up next** (flagged, due within a week, or to check), **Waiting**, and a count of the rest. If there is no brief, run `leftoff status`. Read it; don't re-explore what it already tells you.
+
+## Picking up from another agent
+
+The user moves between agents and chats, often because one ran out of usage mid-task. The brief is the handoff, so start from it:
+
+- **Each session line and each Doing task says which agent it was and where the work is** (branch, and the worktree folder when there is one). Go to that folder and branch; don't start the work again somewhere else.
+- **`leftoff show <id>`** prints one task in full: the whole note, the next step, where the work is, its history, and the command that reopens the session that last touched it. Read it before continuing a task you didn't start.
+- **"Not recorded: a … session stopped …"** in the brief means the last agent was cut off before it wrote anything down. Run `leftoff tail` to read how that session ended (its last messages and commands, from its own transcript), then check the working tree (`git status`, `git log`) before you continue. `leftoff tail --agent claude|codex|kimi` picks one agent; `leftoff tail --list` lists the recent sessions.
+- **Then say in one or two lines what you are picking up and from whom**, and carry on. Don't ask the user to re-explain what the brief, the task and the tail already say.
+
+## Leaving it ready for the next agent
+
+Any session can be the last one before a switch, and it rarely gets a warning. So keep the task itself current while you work, not only at the end:
+
+- **Run `leftoff` from the folder the work is in.** That records the branch and worktree on the task, which is how the next agent finds the code.
+- **After each real step** (a commit, a passing check, a decision), update the task: `leftoff update <id> --note "<where it stands now>" --next "<the single next step>"`. Put uncommitted work in the note too: which files, and whether it runs.
+- **`--next` is one concrete action** another agent could do cold: "Run tests/test_billing.py and fix the two rounding failures", not "continue".
+
+## While you work: record as it happens, not at the end
+
+The end of a session is often never reached, and a stale board is worse than none.
+
+- **Finished something on the list? Close it now:** `leftoff done <id>`. Shipped, fixed, decided, answered all count. The same goes for a task you can *see* is already done (deployed, live, file exists) even if another session did it.
+- **Picked something up?** `leftoff move <id> doing`.
+- **Stopped before it was finished?** `leftoff move <id> todo`, with a note on where it stands. Doing means someone is on it now.
+- **Blocked on someone outside?** `leftoff move <id> waiting`, with a note that opens with who and what is needed. `leftoff move <id> doing` (or `todo`) takes it back out when the answer arrives.
+- **Left something unfinished, or the user moves on from a fix you suggested?** Record it at that moment: `leftoff task "<title>" --note "<where it stands, next step>"`. Label a mere suggestion `idea`.
+
+## Several agents at once
+
+The user may have several chats and delegated workers on one project at the same time. The brief says who else is working there right now.
+
+- **Only touch tasks your session worked on or checked.** A task in Doing that you don't recognise is probably another chat's; leave it unless the user hands it to you.
+- **Handing a task to a worker:** move it to Doing and note who has it.
+- **A worker's "ready for review" is not Done.** The task stays in Doing while you review. Accepted but not yet shipped is still not Done.
+- **If you are the worker:** leave the board alone. Don't close or move the task you were given, and don't run `leftoff did`; report to the coordinator, who records it after review.
+
+## Before the session ends
+
+1. `leftoff did "<1-3 sentences, past tense>"`, once for each project you did work for (`--project`). Lead with what changed and whether it is live, on staging or waiting for review. Then what's half-done and the next step. What the user needs to find it again (PR, commit, branch) goes last. Leave out how the work was run (which agent, how many tests).
+   Running it again in the same session replaces that session's entry, so update it as the work moves rather than saving it for the end.
+2. Go through the open tasks you touched once more and close or move whatever changed. Nothing you worked on stays in Doing unless someone is still on it. Anything you added this session that is still open gets a note saying where it stands and the next step.
+3. Tell the user in one line what you recorded.
+
+## Projects without a folder
+
+If `leftoff` says the current folder isn't a project, link the session: `leftoff project "<name>"` (an existing project's name if one fits). When its repo gets cloned or created, put it in the projects folder (`leftoff roots`) and run `leftoff bind <folder>`.
 
 ## Servers and passwords
 
-The session-start note lists the user's saved servers. Reach them with `leftoff ssh <name> '<command>'` (or `leftoff ssh <name>` for a shell). The key and address are handled, so don't ask the user for them. When the user gives you a new server once, save it so they never repeat it: `leftoff server add <name> <user@host[:port]> [--key <path>]`.
+The brief lists saved servers. Reach them with `leftoff ssh <name> '<command>'`; keys are handled. Save a new one with `leftoff server add <name> <user@host[:port]> [--key <path>]`.
 
-Passwords live in the system keyring. Use one without it entering the conversation, `leftoff secret run VAR=<name> -- <command>`, and reach for `leftoff secret get <name>` only when the value itself is needed. To save one, run `leftoff secret set <name>` and let the user type it into their terminal. Don't put the value on a command line.
-
-## When starting work in a project
-
-`leftoff status` prints the last session's summary and the ongoing tasks. A session-start hook usually shows this already, so run it only when you need the detail. If the user picks up an ongoing task, that's useful context. If they start something new, keep working and record it at the end.
-
-## When the user changes direction mid-conversation
-
-People get sidetracked inside one conversation: halfway through a bug they spot another and chase it, or you suggest a fix and they move on to something else. Whatever gets left behind is exactly what they'll forget, and by the end of a long session it may have scrolled out of view. So record it at the moment of the pivot, not at the end:
-
-- the work being set aside, if it's unfinished: `leftoff task "<title>" --note "<where it stands>"`
-- any fix or feature you suggested that they didn't take up: `leftoff task "<title>" --note "Suggested: <what and why>"`
-
-Then carry on with what they asked. One line is enough to tell them ("Noted the webhook retry fix in Left Off for later.").
-
-## Before the session ends, or when the user switches away
-
-1. **Summarize the session:** `leftoff did "<summary>"`
-   - Write one to three sentences in the past tense. Say what was built, fixed or decided, name the files or branch, and say what's left half-done. Write it for the user reading it days later, not as a changelog.
-   - There's one entry per session. Running it again in the same session replaces the earlier summary, so update it as the work moves on instead of adding a second one.
-2. **Record unfinished work as tasks:** `leftoff task "<short title>" --note "<where it stands and the next step>"`
-   - Only add real follow-ups the user would want to be reminded of, not every small TODO.
-   - Tasks land in Low priority on the user's board. Add `--priority high` only for something urgent or blocking, so the High column stays meaningful.
-   - Check `leftoff status` first. If the task already exists, update it instead: `leftoff update "<task>" --note "..."`.
-3. **Close finished tasks:** `leftoff done "<task id or part of its title>"`
-
-Then tell the user in one line what you recorded, e.g. "Logged this session and one ongoing task in Left Off."
-
-Example, at the end of a session in a recipe app:
-
-```bash
-leftoff did "Added offline caching for saved recipes (src/db/cache.ts) and fixed the duplicate-save bug. Image upload still crashes on Android."
-leftoff task "Fix Android image upload crash" --note "Crashes in ImagePicker on Android 15; repro with any photo over 10 MB"
-leftoff done "duplicate save"
-```
-
-## Other commands
-
-- `leftoff start "<title>"` adds a task and makes it the current one.
-- `leftoff resume <task>` makes an existing task the current one again.
-- `leftoff drop <task>` deletes a task that no longer matters.
+Use a password without it entering the conversation: `leftoff secret run VAR=<name> -- <command>`. `leftoff secret get <name>` prints it, only when the value itself is needed. To save one, `leftoff secret set <name>` reads it from stdin or a hidden prompt. Never put a value on a command line.

@@ -97,7 +97,7 @@ Reply with only a JSON object, no prose:
   - work that was started but not finished, including anything the user switched away from mid-session (for example a bug they left to chase a different one);
   - fixes, features or follow-ups that Claude suggested, or the user said to do later, that were not done in this session.
   At most five, the ones the user would most regret forgetting. Titles are 3 to 8 words. The note is one short sentence on where it stands or what was proposed. Leave out trivia and anything that was finished.
-- done: ids of existing ongoing tasks that this session clearly finished.
+- done: ids of existing ongoing tasks that are finished: ones this session finished, and ones the session shows were already finished (the user said so, or Claude found the PR merged, the fix deployed, the thing already done). Leave out anything you are not sure about.
 
 Current records:
 ${records}

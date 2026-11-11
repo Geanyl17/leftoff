@@ -8,6 +8,7 @@ import { Settings } from './components/Settings'
 import { Chat } from './components/Chat'
 import { Logo } from './components/Logo'
 import { Board } from './components/Board'
+import { Today } from './components/Today'
 import { NewProject } from './components/NewProject'
 import { Vault } from './components/Vault'
 import type { ProjectView } from './lib/view'
@@ -246,6 +247,15 @@ export default function App() {
               </span>
             </nav>
 
+            <Today
+              views={visible}
+              onPick={(id) => {
+                setExpanded((x) => new Set(x).add(id))
+                setFocus(id)
+                setTimeout(() => setFocus(null), 2000)
+                if (view === 'board') switchView('list')
+              }}
+            />
             {view === 'board' ? (
               <Board views={visible} />
             ) : (
